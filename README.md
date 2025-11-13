@@ -1,6 +1,6 @@
 # 🧠 智能答题助手
 
-基于 OCR 和 AI 的智能答题助手，支持自动识别屏幕上的题目并快速给出答案。
+基于 OCR 和 AI 的智能答题助手，支持自动识别屏幕上的题目并快速给出答案，可用用于头脑王者等游戏的答题辅助。
 
 ## ✨ 特性
 
@@ -21,8 +21,8 @@
 
 1. 克隆项目
 ```bash
-git clone https://github.com/你的用户名/quiz-helper.git
-cd quiz-helper
+git clone https://github.com/one1ife/AI-ANSWER.git
+cd AI-ANSWER
 ```
 
 2. 安装依赖
@@ -112,7 +112,7 @@ MIT License
 
 ## ⚡ 更新日志
 
-### v1.0.0 (2025-01-13)
+### v1.0.0 (2025-11-13)
 - ✅ 实现 OCR 自动识别功能
 - ✅ 支持固定窗口捕获
 - ✅ 支持自定义区域截图
