@@ -17,7 +17,7 @@ from ctypes import windll
 class BrainKingHelper:
     def __init__(self):
         # 通义千问API配置
-        self.api_key = ""
+        self.api_key = "sk-7e8e472452e24997bb761f31f0de31a5"
         self.api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
         self.ocr_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         self.answer_count = 0
@@ -135,7 +135,7 @@ class BrainKingHelper:
                                     "image": f"data:image/png;base64,{img_base64}"
                                 },
                                 {
-                                    "text": "请识别图片中的题目和选项，只输出题目内容，不要其他说明。"
+                                    "text": "请识别图片中的题目和所有选项。按以下格式输出：\n题目：[题目内容]\nA. [选项A]\nB. [选项B]\nC. [选项C]\nD. [选项D]\n不要其他说明。"
                                 }
                             ]
                         }
@@ -168,7 +168,7 @@ class BrainKingHelper:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "你是智能答题助手。直接给出答案,只说答案本身,不要解释。如果是选择题,直接说选项内容。"
+                        "content": "你是智能答题助手。直接给出答案,只说选项的具体内容,不要说A、B、C、D这些字母,也不要解释。例如题目问'中国的首都是哪里?'选项有'北京、上海、广州、深圳',你只需回答'北京'。"
                     },
                     {
                         "role": "user",
