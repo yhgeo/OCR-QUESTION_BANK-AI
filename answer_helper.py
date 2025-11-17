@@ -4,21 +4,17 @@
 """
 
 import requests
-import json
 import time
 from PIL import ImageGrab
 from io import BytesIO
 import base64
 import win32gui
-import win32con
-import win32api
 from ctypes import windll
 
 class BrainKingHelper:
     def __init__(self):
         # 通义千问API配置
-        self.api_key = "sk-7e8e472452e24997bb761f31f0de31a5"
-        self.api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        self.api_key = "sk-your-api-key-here"  # 替换为你的通义千问 API Key
         self.ocr_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         self.answer_count = 0
         self.start_time = None
@@ -125,7 +121,7 @@ class BrainKingHelper:
             }
             
             data = {
-                "model": "qwen-vl-plus",
+                "model": "qwen3-vl-plus",
                 "input": {
                     "messages": [
                         {
@@ -135,7 +131,7 @@ class BrainKingHelper:
                                     "image": f"data:image/png;base64,{img_base64}"
                                 },
                                 {
-                                    "text": "请识别图片中的题目和所有选项。按以下格式输出：\n题目：[题目内容]\nA. [选项A]\nB. [选项B]\nC. [选项C]\nD. [选项D]\n不要其他说明。"
+                                    "text": "请识别图片中的题目和选项，并直接给出正确答案。只需要回答选项的具体内容，不要说A、B、C、D这些字母，也不要解释。"
                                 }
                             ]
                         }
@@ -153,48 +149,6 @@ class BrainKingHelper:
                 return None
         except Exception as e:
             print(f"OCR识别失败: {e}")
-            return None
-    
-    def get_answer(self, question):
-        """快速获取答案"""
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            data = {
-                "model": "qwen-plus",  # 使用plus模型，准确率更高
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "你是智能答题助手。直接给出答案,只说选项的具体内容,不要说A、B、C、D这些字母,也不要解释。例如题目问'中国的首都是哪里?'选项有'北京、上海、广州、深圳',你只需回答'北京'。"
-                    },
-                    {
-                        "role": "user",
-                        "content": question
-                    }
-                ],
-                "temperature": 0.1,
-                "max_tokens": 30
-            }
-            
-            start = time.time()
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=10)
-            elapsed = time.time() - start
-            
-            if response.status_code == 200:
-                result = response.json()
-                answer = result['choices'][0]['message']['content'].strip()
-                self.answer_count += 1
-                return {
-                    'answer': answer,
-                    'time': f"{elapsed:.2f}秒"
-                }
-            else:
-                return None
-                
-        except Exception as e:
             return None
 
 def main():
@@ -332,25 +286,20 @@ def main():
                 print("❌ 截图失败，请检查窗口是否最小化\n")
                 continue
             
-            print("🔍 OCR识别中...")
-            question = helper.ocr_image(screenshot)
+            print("🔍 AI识别并答题中...")
+            start = time.time()
+            answer = helper.ocr_image(screenshot)
+            elapsed = time.time() - start
             
-            if not question:
+            if not answer:
                 print("❌ 识别失败，请重试\n")
                 continue
             
-            print(f"📝 题目: {question}\n")
-            print("⏳ AI答题中...")
-            
-            result = helper.get_answer(question)
-            
-            if result:
-                print(f"\n{'='*60}")
-                print(f"✅ 答案: {result['answer']}")
-                print(f"⚡ 用时: {result['time']}")
-                print(f"{'='*60}\n")
-            else:
-                print("❌ 获取答案失败\n")
+            helper.answer_count += 1
+            print(f"\n{'='*60}")
+            print(f"✅ 答案: {answer}")
+            print(f"⚡ 用时: {elapsed:.2f}秒")
+            print(f"{'='*60}\n")
         
         except KeyboardInterrupt:
             print("\n\n程序中断")
