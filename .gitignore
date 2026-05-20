@@ -30,14 +30,23 @@ wheels/
 *.swo
 *~
 
-# 项目特定文件
+# 项目运行产物
 window_preview.png
 region_preview.png
-*.png
 
-# 环境变量和配置
+# 本地题库与配置（仅提交示例）
+answer_helper_config.json
+answer_question_bank.json
+question_banks/*.json
+!question_banks/example.json
+
+# 本地工具配置
+.claude/
+
+# 环境变量和本地配置
 .env
 config.json
+answer_helper_config.local.json
 
 # 日志
 *.log

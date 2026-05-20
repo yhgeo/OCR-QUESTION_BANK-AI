@@ -1,3 +1,5 @@
 requests==2.31.0
 Pillow
 pywin32
+numpy
+rapidocr-onnxruntime
