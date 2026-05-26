@@ -1,0 +1,8 @@
+{
+  "provider_name": "OpenAI",
+  "api_key": "YOUR_API_KEY_HERE",
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o-mini",
+  "default_background_prompt": "",
+  "model_enabled": true
+}

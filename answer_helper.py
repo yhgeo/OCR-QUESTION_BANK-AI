@@ -43,6 +43,10 @@ class BrainKingHelper:
         "请识别图片中的题目和选项，并直接给出正确答案。"
         "只需要回答选项的具体内容，不要说A、B、C、D这些字母，也不要解释。"
     )
+    DEFAULT_TEXT_ANSWER_PROMPT = (
+        "请根据 OCR 识别出的题目和选项文本，直接给出正确答案。"
+        "只需要回答选项的具体内容，不要说A、B、C、D这些字母，也不要解释。"
+    )
     DEFAULT_EXTRACT_PROMPT = (
         "请把图片中的题目与选项尽量逐字转写成纯文本，不要回答题目。"
         "不要改写，不要概括，不要补充推测。"
@@ -56,6 +60,8 @@ class BrainKingHelper:
     )
     QUESTION_BANK_SIMILARITY_THRESHOLD = 0.72
     QUESTION_BANK_SUBSTRING_SIMILARITY_THRESHOLD = 0.80
+    QUESTION_BANK_MIN_QUERY_LENGTH = 8
+    QUESTION_BANK_MIN_CONTAINS_LENGTH = 8
     MODEL_UNAVAILABLE_ERROR_KEYWORDS = [
         "connection",
         "connect",
@@ -94,6 +100,7 @@ class BrainKingHelper:
         self.start_time = None
         self.target_window = None
         self.capture_region = None
+        self.capture_region_relative = None
         self.default_background_prompt = ""
         self.session_background_prompt = ""
         self.question_bank_enabled = False
@@ -485,10 +492,36 @@ class BrainKingHelper:
 
         return self.clean_extracted_question_text("\n".join(lines)), None
 
+    def build_question_bank_entry(self, question, answer, aliases):
+        candidates = []
+        for text in [question, *aliases]:
+            normalized = self.normalize_question_text(text)
+            if normalized:
+                candidates.append({
+                    "text": text,
+                    "normalized": normalized,
+                })
+
+        return {
+            "question": question,
+            "answer": answer,
+            "aliases": aliases,
+            "_normalized_candidates": candidates,
+        }
+
     def load_question_bank_entries_from_data(self, data):
+        if not isinstance(data, dict):
+            return []
+
         entries = data.get("entries", [])
+        if not isinstance(entries, list):
+            return []
+
         valid_entries = []
         for item in entries:
+            if not isinstance(item, dict):
+                continue
+
             question = str(item.get("question", "") or "").strip()
             answer = str(item.get("answer", "") or "").strip()
             aliases = item.get("aliases", [])
@@ -496,11 +529,7 @@ class BrainKingHelper:
                 aliases = []
             aliases = [str(alias).strip() for alias in aliases if str(alias).strip()]
             if question and answer:
-                valid_entries.append({
-                    "question": question,
-                    "answer": answer,
-                    "aliases": aliases,
-                })
+                valid_entries.append(self.build_question_bank_entry(question, answer, aliases))
         return valid_entries
 
     def load_question_bank(self):
@@ -531,11 +560,11 @@ class BrainKingHelper:
 
         if not valid_entries:
             if errors:
-                return [], "读取题库失败: " + "；".join(errors)
+                return [], "读取题库失败: " + "；".join(errors), loaded_sources
             return [], (
                 f"未找到可用题库，请将 JSON 题库放入 {self.QUESTION_BANK_DIR.name} 文件夹，"
                 f"或维护 {self.QUESTION_BANK_FILE.name}"
-            )
+            ), loaded_sources
 
         return valid_entries, None, loaded_sources
 
@@ -587,8 +616,12 @@ class BrainKingHelper:
         if purpose == "extract":
             return self.DEFAULT_EXTRACT_PROMPT
 
+        if purpose == "text_answer":
+            base_prompt = self.DEFAULT_TEXT_ANSWER_PROMPT
+        else:
+            base_prompt = self.DEFAULT_ANSWER_PROMPT
+
         background = self.session_background_prompt.strip()
-        base_prompt = self.DEFAULT_ANSWER_PROMPT
         if not background:
             return base_prompt
 
@@ -663,22 +696,82 @@ class BrainKingHelper:
             print(f"获取窗口位置失败: {e}")
             return None
 
-    def capture_screen(self, use_region=False):
+    def validate_bbox(self, bbox):
+        if not isinstance(bbox, (tuple, list)) or len(bbox) != 4:
+            return None, "截图区域格式无效"
+
+        left, top, right, bottom = bbox
+        if right <= left or bottom <= top:
+            return None, "截图区域大小无效"
+
+        return (left, top, right, bottom), None
+
+    def safe_grab(self, bbox=None):
+        if bbox is not None:
+            bbox, error = self.validate_bbox(bbox)
+            if error:
+                return None, error
+
         try:
-            if use_region and self.capture_region:
-                screenshot = ImageGrab.grab(bbox=self.capture_region)
-            elif self.target_window:
-                rect = self.get_window_rect(self.target_window)
-                if rect:
-                    screenshot = ImageGrab.grab(bbox=rect)
-                else:
-                    screenshot = ImageGrab.grab()
-            else:
-                screenshot = ImageGrab.grab()
-            return screenshot
+            return ImageGrab.grab(bbox=bbox), None
         except Exception as e:
-            print(f"截图失败: {e}")
+            return None, f"截图失败: {e}"
+
+    def get_absolute_capture_region(self):
+        if self.capture_region_relative and self.target_window:
+            rect = self.get_window_rect(self.target_window)
+            if not rect:
+                return None, "无法获取窗口位置，可能窗口被最小化"
+
+            left, top, right, bottom = self.capture_region_relative
+            bbox = (
+                rect[0] + left,
+                rect[1] + top,
+                rect[0] + right,
+                rect[1] + bottom,
+            )
+            bbox, error = self.validate_bbox(bbox)
+            if error:
+                return None, error
+            self.capture_region = bbox
+            return bbox, None
+
+        if self.capture_region:
+            return self.validate_bbox(self.capture_region)
+
+        return None, "未设置截图区域"
+
+    def validate_relative_region(self, coords, width, height):
+        if len(coords) != 4:
+            return None, "区域格式错误，请输入 4 个数字"
+
+        left, top, right, bottom = coords
+        if right <= left or bottom <= top:
+            return None, "区域大小无效，右下角必须大于左上角"
+        if left < 0 or top < 0 or right > width or bottom > height:
+            return None, "区域超出窗口范围"
+        return (left, top, right, bottom), None
+
+    def capture_screen(self, use_region=False):
+        if use_region:
+            bbox, error = self.get_absolute_capture_region()
+            if error:
+                print(f"截图失败: {error}")
+                return None
+            screenshot, error = self.safe_grab(bbox=bbox)
+        elif self.target_window:
+            rect = self.get_window_rect(self.target_window)
+            if rect:
+                screenshot, error = self.safe_grab(bbox=rect)
+            else:
+                screenshot, error = self.safe_grab()
+        else:
+            screenshot, error = self.safe_grab()
+
+        if error:
+            print(error)
             return None
+        return screenshot
 
     def save_preview_image(self, image, filename):
         save_path = Path(__file__).with_name(filename)
@@ -693,31 +786,14 @@ class BrainKingHelper:
         image.save(buffered, format="PNG")
         return base64.b64encode(buffered.getvalue()).decode()
 
-    def request_multimodal_text(self, image, prompt, max_tokens=300):
+    def request_chat_completion(self, messages, max_tokens=300):
         if not self.is_model_ready():
             return None, "模型未配置或当前未启用"
 
         try:
-            img_base64 = self.image_to_base64(image)
             data = {
                 "model": self.model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": prompt,
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{img_base64}"
-                                }
-                            }
-                        ]
-                    }
-                ],
+                "messages": messages,
                 "temperature": 0.1,
                 "max_tokens": max_tokens,
             }
@@ -744,6 +820,43 @@ class BrainKingHelper:
         except Exception as e:
             return None, str(e)
 
+    def request_multimodal_text(self, image, prompt, max_tokens=300):
+        if not self.is_model_ready():
+            return None, "模型未配置或当前未启用"
+
+        try:
+            img_base64 = self.image_to_base64(image)
+        except Exception as e:
+            return None, str(e)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{img_base64}"
+                        }
+                    }
+                ]
+            }
+        ]
+        return self.request_chat_completion(messages, max_tokens=max_tokens)
+
+    def request_text_completion(self, prompt, max_tokens=300):
+        messages = [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ]
+        return self.request_chat_completion(messages, max_tokens=max_tokens)
+
     def extract_question_text(self, image):
         prompt = self.build_text_prompt("extract")
         text, error = self.request_multimodal_text(image, prompt, max_tokens=500)
@@ -754,6 +867,14 @@ class BrainKingHelper:
     def answer_question(self, image):
         prompt = self.build_text_prompt("answer")
         return self.request_multimodal_text(image, prompt, max_tokens=200)
+
+    def answer_question_text(self, question_text):
+        prompt = (
+            f"{self.build_text_prompt('text_answer')}\n\n"
+            "OCR 识别文本：\n"
+            f"{question_text}"
+        )
+        return self.request_text_completion(prompt, max_tokens=200)
 
     def clean_extracted_question_text(self, text):
         cleaned_lines = []
@@ -795,6 +916,29 @@ class BrainKingHelper:
                 best_score = score
         return best_score
 
+    def get_question_bank_candidates(self, entry):
+        candidates = entry.get("_normalized_candidates")
+        if candidates:
+            return candidates
+
+        generated_candidates = []
+        for text in [entry.get("question", ""), *entry.get("aliases", [])]:
+            normalized = self.normalize_question_text(text)
+            if normalized:
+                generated_candidates.append({
+                    "text": text,
+                    "normalized": normalized,
+                })
+        return generated_candidates
+
+    def is_reliable_contains_match(self, normalized_question, normalized_candidate):
+        shorter_length = min(len(normalized_question), len(normalized_candidate))
+        if shorter_length < self.QUESTION_BANK_MIN_CONTAINS_LENGTH:
+            return False
+        if len(normalized_question) < self.QUESTION_BANK_MIN_QUERY_LENGTH:
+            return False
+        return normalized_candidate in normalized_question or normalized_question in normalized_candidate
+
     def find_answer_in_question_bank(self, question_text):
         normalized_question = self.normalize_question_text(question_text)
         if not normalized_question:
@@ -810,16 +954,12 @@ class BrainKingHelper:
         best_substring_candidate = ""
 
         for entry in self.question_bank_entries:
-            candidates = [entry["question"], *entry.get("aliases", [])]
-            for candidate in candidates:
-                normalized_candidate = self.normalize_question_text(candidate)
+            for candidate in self.get_question_bank_candidates(entry):
+                normalized_candidate = candidate.get("normalized", "")
                 if not normalized_candidate:
                     continue
 
-                if (
-                    normalized_candidate in normalized_question
-                    or normalized_question in normalized_candidate
-                ):
+                if self.is_reliable_contains_match(normalized_question, normalized_candidate):
                     candidate_length = len(normalized_candidate)
                     if candidate_length > best_contains_length:
                         best_contains_match = entry
@@ -829,16 +969,21 @@ class BrainKingHelper:
                 if similarity > best_similarity_score:
                     best_similarity_score = similarity
                     best_similarity_match = entry
-                    best_similarity_candidate = candidate
+                    best_similarity_candidate = candidate.get("text", "")
 
-                substring_similarity = self.calculate_best_substring_similarity(
-                    normalized_question,
-                    normalized_candidate,
-                )
+                substring_similarity = 0.0
+                if (
+                    len(normalized_question) >= self.QUESTION_BANK_MIN_QUERY_LENGTH
+                    and len(normalized_candidate) >= self.QUESTION_BANK_MIN_CONTAINS_LENGTH
+                ):
+                    substring_similarity = self.calculate_best_substring_similarity(
+                        normalized_question,
+                        normalized_candidate,
+                    )
                 if substring_similarity > best_substring_score:
                     best_substring_score = substring_similarity
                     best_substring_match = entry
-                    best_substring_candidate = candidate
+                    best_substring_candidate = candidate.get("text", "")
 
         if best_contains_match:
             return best_contains_match, {
@@ -954,12 +1099,15 @@ def main():
                 print(f"✓ 窗口区域: 位置({rect[0]}, {rect[1]}) 大小({width}x{height})")
 
                 print("\n正在截取窗口预览...")
-                preview = ImageGrab.grab(bbox=rect)
-                preview_path = helper.save_preview_image(preview, "window_preview.png")
-                if preview_path:
-                    print("✓ 预览已保存为 window_preview.png，请查看确认窗口内容")
+                preview, preview_error = helper.safe_grab(bbox=rect)
+                if preview is not None:
+                    preview_path = helper.save_preview_image(preview, "window_preview.png")
+                    if preview_path:
+                        print("✓ 预览已保存为 window_preview.png，请查看确认窗口内容")
+                    else:
+                        print("⚠️  预览图保存失败，已跳过保存")
                 else:
-                    print("⚠️  预览图保存失败，已跳过保存")
+                    print(f"⚠️  窗口预览截图失败: {preview_error}，已跳过保存")
             else:
                 print("⚠️  无法获取窗口位置，可能窗口被最小化")
                 helper.target_window = None
@@ -974,22 +1122,28 @@ def main():
                     region_input = input("输入区域: ").strip()
                     try:
                         coords = [int(x.strip()) for x in region_input.split(',')]
-                        if len(coords) == 4:
-                            left, top, right, bottom = coords
-                            helper.capture_region = (
-                                rect[0] + left,
-                                rect[1] + top,
-                                rect[0] + right,
-                                rect[1] + bottom
-                            )
-                            print("✓ 已设置截图区域")
-
-                            region_preview = ImageGrab.grab(bbox=helper.capture_region)
-                            region_preview_path = helper.save_preview_image(region_preview, "region_preview.png")
-                            if region_preview_path:
-                                print("✓ 区域预览已保存为 region_preview.png")
+                        region, region_error = helper.validate_relative_region(coords, width, height)
+                        if region_error:
+                            print(f"✗ {region_error}，使用完整窗口")
+                        else:
+                            helper.capture_region_relative = region
+                            region_bbox, region_bbox_error = helper.get_absolute_capture_region()
+                            if region_bbox_error:
+                                print(f"✗ {region_bbox_error}，使用完整窗口")
+                                helper.capture_region = None
+                                helper.capture_region_relative = None
                             else:
-                                print("⚠️  区域预览保存失败，已跳过保存")
+                                print("✓ 已设置截图区域")
+
+                                region_preview, region_preview_error = helper.safe_grab(bbox=region_bbox)
+                                if region_preview is not None:
+                                    region_preview_path = helper.save_preview_image(region_preview, "region_preview.png")
+                                    if region_preview_path:
+                                        print("✓ 区域预览已保存为 region_preview.png")
+                                    else:
+                                        print("⚠️  区域预览保存失败，已跳过保存")
+                                else:
+                                    print(f"⚠️  区域预览截图失败: {region_preview_error}，已跳过保存")
                     except Exception:
                         print("✗ 区域格式错误，使用完整窗口")
         else:
@@ -1030,13 +1184,15 @@ def main():
 
                 if hwnd:
                     helper.target_window = hwnd
-                    print("✓ 窗口已更新")
+                    helper.capture_region = None
+                    helper.capture_region_relative = None
+                    print("✓ 窗口已更新，原截图区域已清空，如需固定区域请重新设置")
                 else:
                     print("✗ 未找到窗口")
                 continue
 
             print("\n📸 正在截图...")
-            screenshot = helper.capture_screen(use_region=bool(helper.capture_region))
+            screenshot = helper.capture_screen(use_region=bool(helper.capture_region_relative or helper.capture_region))
 
             if not screenshot:
                 print("❌ 截图失败，请检查窗口是否最小化\n")
@@ -1083,9 +1239,23 @@ def main():
                 print("❌ 题库未命中，且当前模型不可用，无法继续AI答题。\n")
                 continue
 
-            print("🔍 AI识别并答题中...")
-            start = time.time()
-            answer, error = helper.answer_question(screenshot)
+            if extracted_question:
+                print("🔍 题库未命中，正在使用 OCR 文本请求 AI...")
+                start = time.time()
+                answer, error = helper.answer_question_text(extracted_question)
+                answer_source = "OCR文本"
+                if error or not answer:
+                    formatted_error = helper.format_error_message(error or '模型未返回答案')
+                    if not helper.is_model_available_error(formatted_error):
+                        print(f"⚠️  OCR文本答题失败，尝试图片兜底: {formatted_error}")
+                        start = time.time()
+                        answer, error = helper.answer_question(screenshot)
+                        answer_source = "图片"
+            else:
+                print("🔍 AI识别并答题中...")
+                start = time.time()
+                answer, error = helper.answer_question(screenshot)
+                answer_source = "图片"
             elapsed = time.time() - start
 
             if error or not answer:
@@ -1099,6 +1269,7 @@ def main():
             helper.answer_count += 1
             print(f"\n{'=' * 60}")
             print(f"✅ AI答案: {answer}")
+            print(f"🤖 AI输入: {answer_source}")
             if extracted_question:
                 print(f"📝 识别题目: {extracted_question}")
             print(f"⚡ 用时: {elapsed:.2f}秒")
